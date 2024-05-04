@@ -1,0 +1,228 @@
+---
+title: 变速滑块逆向
+date: '2024-05-04'
+tags: ['js', 'web']
+draft: false
+summary: 滑块逆向分析
+---
+
+#### 声明
+
+**本文章中所有内容仅供学习交流使用，严禁用于商业用途和非法用途，否则由此产生的一切后果均与作者无关，若有侵权，请联系作者立即删除！**
+
+#### 目标网站
+
+该网站的滑块非常有创意，滑动时会加速，与常规滑动验证码不同，其计算真实滑动距离也比较有意思
+
+aHR0cHM6Ly93d3cuMjk4MC5jb20vbG9naW4v
+
+![CPT2312082240-360x334 (1)](https://ram-obsidian-1302659657.cos.ap-guangzhou.myqcloud.com/md_image/CPT2312082240-360x334%20(1).gif)
+
+#### 抓包分析与参数分析
+
+![image-20231208224757306](https://ram-obsidian-1302659657.cos.ap-guangzhou.myqcloud.com/md_image/image-20231208224757306.png)
+
+##### 第1个滑块注册请求
+请求参数没有需要分析的，响应数据中的token、appid会在后面两个请求中用到
+
+##### 第2个验证码相关信息请求
+
+参数分析：
+
+token、appid：是滑块注册请求返回的
+
+type：不是默认值，但是可以固定
+
+t：时间戳，后面响应解密需要用到
+
+![image-20231209104144031](https://ram-obsidian-1302659657.cos.ap-guangzhou.myqcloud.com/md_image/image-20231209104144031.png)
+
+该网站使用了OB混淆，分析前可以先使用AST还原一下代码进行替换，方便调试，不还原也影响不大；
+
+分析k参数的生成
+
+​	固定字符 7b1a9a1bf19e060c07f8b294bf9d3c3e,bc91569eca00afb1334d822a163ca4e3 与 dfcfa016c1984d6 + 时间戳再截取固定索引范围的字符，经过标准AES算法加密生成k参数，其中 7b1a9a1bf19e060c07f8b294bf9d3c3e 是 checkWebglAndFontlist函数生成（检测浏览器环境），bc91569eca00afb1334d822a163ca4e3 是Fingerprint2函数生成（浏览器指纹），这两个值可以固定，就不详细分析了，有兴趣的可以详细看看这两个函数
+
+```js
+// 这段代码是生成k参数的
+_0x364876 = _0x3e014f(_0x196891, fingerPrinterList[2] + ',' + fingerPrinterSon, ("dfcfa016c1984d6" + _0x15bacc)["substring"](8, 24));
+---> 拆解函数调用
+_0x196891("7b1a9a1bf19e060c07f8b294bf9d3c3e,bc91569eca00afb1334d822a163ca4e3", ("dfcfa016c1984d6" + 时间戳)["substring"](8, 24));
+```
+
+![image-20231208232229913](https://ram-obsidian-1302659657.cos.ap-guangzhou.myqcloud.com/md_image/image-20231208232229913.png)
+
+响应请求解密
+
+在 success 位置打上断点，跟到下图位置，就找到响应解密的地方，解密也是使用标准的AES算法，第一个参数传入响应加密值mes，第二个参数传入 dfcfa016c1984d6 + 时间戳再截取固定索引范围的字符，这里的时间戳是请求时的t参数，要保持一致
+
+![image-20231209104454590](https://ram-obsidian-1302659657.cos.ap-guangzhou.myqcloud.com/md_image/image-20231209104454590.png)
+
+响应参数分析
+
+```json
+{
+    "background": "https://csmoss.duoyi.com/20/1242d28a2df635",  // 验证码背景图片--乱序
+    "jigsaw": "https://csmoss.duoyi.com/20/1242d3f8572d64", // 滑块图片
+    "sn": "888dcc331745409db4fbfbff9c44e543", // 验证请求会用到
+    "type": 21,
+    "list": [3,4,2,6,1,0,8,9,7,5], // 验证码背景图片还原顺序
+    "startPosition": 2 // 滑块图片在验证码背景图片的起始位置，很关键，计算滑动距离的重要参数
+}
+```
+
+验证码背景图还原
+
+打上Canvas断点，跟几步就到了背景图还原的位置，算法不难，对照翻译成python即可，这里不做详细解释，贴出代码参考
+
+![image-20231209105748932](https://ram-obsidian-1302659657.cos.ap-guangzhou.myqcloud.com/md_image/image-20231209105748932.png)
+
+```python
+def image_restoration(order: list):
+    """
+    验证码图片还原
+    :param order: 图片还原顺序
+    """
+    img_bytes = open("img/background.jpg", "rb").read()
+    img = Image.open(io.BytesIO(img_bytes))
+    # 每次裁剪图片宽度
+    width = 32
+    # 每次裁剪图片高度(200 --> 原图高度)
+    height = 200
+    # 创建还原后的背景图（画布）
+    new_img = Image.new(mode='RGB', size=(320, 200))
+    for idx in range(len(order)):
+        # 需要裁剪的图片左上角坐标(x轴)
+        sx = idx * width
+        # 需要裁剪的图片左下角坐标(y轴)
+        sy = 0
+        # 被裁剪部分图片的宽度
+        swidth = width
+        # 被剪切图像的高度
+        sheight = height
+        # 剪切图片
+        image_data = img.crop((sx, sy, sx + swidth, sy + sheight))
+        # 将裁剪的小图粘贴到画布里
+        # 目标画布图像的 x 坐标
+        dx = order[idx] * width
+        # 目标画布图像的 y 坐标
+        dy = 0
+        new_img.paste(image_data, (dx, dy))
+    new_img.save('img/new_bg.jpg')
+    print(f'成功还原乱序背景图片: new_bg.jpg')
+```
+
+##### 第3个验证码验证请求
+
+参数分析：
+
+token、appid：验证码注册请求返回的
+
+user_id：默认为空
+
+timestamp：时间戳
+
+sn：验证码相关信息请求返回
+
+seed：默认为0
+
+剩下的portion、cn、signature和Request Payload参数下面逐一分析
+
+![image-20231209110710143](https://ram-obsidian-1302659657.cos.ap-guangzhou.myqcloud.com/md_image/image-20231209110710143.png)
+
+portion：随机数(保留两位小数)
+
+![image-20231209120741326](https://ram-obsidian-1302659657.cos.ap-guangzhou.myqcloud.com/md_image/image-20231209120741326.png)
+
+cn："num" + 随机数 +  "time" + 时间戳经过MD5算法加密生成
+
+![image-20231209115048513](https://ram-obsidian-1302659657.cos.ap-guangzhou.myqcloud.com/md_image/image-20231209115048513.png)
+
+signature：
+
+_0x401a9d：随机数(保留两位小数，与上面的portion参数保持一致) + ":" + 时间戳(这个时间戳要和请求参数timestamp保持一致) + token(验证码信息请求返回) 经过MD5算法加密生成
+
+_0x401a9d + ':' + sn(验证码相关信息请求返回) + ":1:" + cn(上面生成的) + ":auth" + ":5b350044ac092f7bf3c2bc791638ca2f" 经过MD5算法加密生成signature参数
+
+![image-20231209115614969](https://ram-obsidian-1302659657.cos.ap-guangzhou.myqcloud.com/md_image/image-20231209115614969.png)
+
+![image-20231209120226937](https://ram-obsidian-1302659657.cos.ap-guangzhou.myqcloud.com/md_image/image-20231209120226937.png)
+
+Request Payload：该参数是滑块验证是否通过的重要参数
+
+![image-20231209121831634](https://ram-obsidian-1302659657.cos.ap-guangzhou.myqcloud.com/md_image/image-20231209121831634.png)
+
+browserMsg：浏览器环境信息，可固定
+
+localIP：WebRtc相关信息，可固定
+
+browserUUID：uuid，可固定
+
+slide：滑块轨迹
+
+这个滑动验证码的滑动轨迹记录了实际的滑动距离，而不是滑块到滑块缺口的滑动距离，这里也是这个滑动验证码与其他滑动验证码的区别，也是比较有意思的地方，这里的滑动轨迹生成并不麻烦，每个轨迹都是从0开始到实际滑动距离均匀分布；比较麻烦的地方是怎么算出实际需要滑动的距离？
+
+![image-20231209123428782](https://ram-obsidian-1302659657.cos.ap-guangzhou.myqcloud.com/md_image/image-20231209123428782.png)
+
+计算实际滑动距离的思路：
+
+首先从文章开头的gif图片中看到滑块在滑动过程会有一个明显的加速，需要从这里入手，分析出加速过程中的每个坐标是怎么计算，从而再根据滑块到滑块缺口的距离反向计算出实际的滑动距离
+
+全局搜索 _0x59fb73['push'] 找到轨迹记录的位置，搜索结果有14个，全部打上断点，重新刷新滑块并滑动，会停到下图位置
+
+![image-20231209131139846](https://ram-obsidian-1302659657.cos.ap-guangzhou.myqcloud.com/md_image/image-20231209131139846.png)
+
+_0x597a26：是通过MouseEvent.clientX去获取实际滑动距离
+
+_0x5b1c53：是计算滑块滑动的距离，加速效果也是这里计算出来的
+
+```js
+// 重要代码
+_0x4c2820 = (+(Math['floor'](Math["random"]() * 30) * 0.01) + 0.6)["toFixed"](2)
+_0x5ce9a4 = (+(Math["floor"](Math["random"]() * 20) * 0.01) + 1.1)["toFixed"](2)
+_0x46d0aa = +Math["floor"](Math["random"]() * 30) + 50
+// _0x597a26 实际滑动坐标,  _0x20fde5  _0x1a5a97["message"]["startPosition"] 验证码信息请求返回startPosition
+var _0x5b1c53 = Math['pow'](_0x46d0aa * _0x597a26, 0.4 * Math['abs'](Math["sin"](0.025 * _0x597a26))) + Math["pow"](_0x597a26, _0x5ce9a4) * _0x4c2820 + _0x20fde5;
+```
+
+这里留一个点，大家可以想想怎么通过 滑块到滑块缺口的距离 和上面的参数算法计算出实际的滑动距离？这个点也是这个验证码有意思的地方
+
+
+
+portion：该参数是通过实际的滑动距离计算得出，也是这个滑块通过验证的关键之一
+
+![image-20231209135507931](https://ram-obsidian-1302659657.cos.ap-guangzhou.myqcloud.com/md_image/image-20231209135507931.png)
+
+![image-20231209135620620](https://ram-obsidian-1302659657.cos.ap-guangzhou.myqcloud.com/md_image/image-20231209135620620.png)
+
+```js
+_0x4c2820 = (+(Math['floor'](Math["random"]() * 30) * 0.01) + 0.6)["toFixed"](2)
+_0x5ce9a4 = (+(Math["floor"](Math["random"]() * 20) * 0.01) + 1.1)["toFixed"](2)
+_0x46d0aa = +Math["floor"](Math["random"]() * 30) + 50
+// _0x118e73是实际滑动距离, _0x366ab4["widthPx"]是 320(验证码的宽度)
+var _0x5eb6c6 = (Math["pow"](_0x46d0aa * _0x118e73, 0.4 * Math["abs"](Math['sin'](0.025 * _0x118e73))) + Math["pow"](_0x118e73, _0x5ce9a4) * _0x4c2820) / _0x366ab4["widthPx"];
+```
+
+cost_time：滑动滑块使用时间
+
+initToSlideTime：启动滑动时间
+
+fingerPrinterList、fingerPrinterSon 是固定值前面有提到过，这里就不分析了
+
+netDuration：默认值0
+
+locationHref：location.href
+
+checkTime：当前时间戳 - 初始时间戳
+
+param_random：随机数计算
+
+isPC：固定值1，检测设备
+
+最终这些参数组合成对象字符串 与 "dfcfa016c1984d6" + signature 截取固定范围字符经过AES算法生成Request Payload参数
+
+![image-20231209141126953](https://ram-obsidian-1302659657.cos.ap-guangzhou.myqcloud.com/md_image/image-20231209141126953.png)
+
+### 结果验证
+
+![image-20231209141656017](https://ram-obsidian-1302659657.cos.ap-guangzhou.myqcloud.com/md_image/image-20231209141656017.png)

@@ -1,0 +1,277 @@
+---
+title: 携程token-jsvmp算法还原
+date: '2024-05-04'
+tags: ['js', 'web', 'jsvmp']
+draft: false
+summary: jsvmp算法还原分析
+---
+
+#### 声明
+
+**本文章中所有内容仅供学习交流使用，严禁用于商业用途和非法用途，否则由此产生的一切后果均与作者无关，若有侵权，请联系作者立即删除！**
+
+#### 目标网址
+
+```
+aHR0cHM6Ly9mbGlnaHRzLmN0cmlwLmNvbS9vbmxpbmUvbGlzdC9yb3VuZC1zaGEtdHlvP2RlcGRhdGU9MjAyMy0wOS0wMl8yMDIzLTA5LTA1JmNhYmluPXlfcyZhZHVsdD0xJmNoaWxkPTAmaW5mYW50PTA=
+```
+
+#### 抓包分析与参数定位
+
+下图是本文需要分析的参数 **token** 的抓包信息
+
+![image-20230901143249987](https://ram-obsidian-1302659657.cos.ap-guangzhou.myqcloud.com/md_image/image-20230901143249987.png)
+
+全局搜索 **window.signature(n)** 找到参数生成位置，打上断点
+
+![image-20230901143951297](https://ram-obsidian-1302659657.cos.ap-guangzhou.myqcloud.com/md_image/image-20230901143951297.png)
+
+#### 算法分析
+
+##### 日志插桩
+
+​	在断点位置进入**window.signature**函数内部就是需要插桩的源码，经过分析在如下位置插桩，插桩时可以设置一个日志开关，防止输出太多无关日志，导致浏览器卡死，可以到断点位置再开启输出与参数相关的日志
+
+第1个位置，如下图，该位置插桩可以看到算法中的运算结果和函数调用的返回值![image-20230901145657616](https://ram-obsidian-1302659657.cos.ap-guangzhou.myqcloud.com/md_image/image-20230901145657616.png)
+
+第2个位置，如下图，该位置插桩可以看到算法中调用的函数和入参
+
+![image-20230901150642914](https://ram-obsidian-1302659657.cos.ap-guangzhou.myqcloud.com/md_image/image-20230901150642914.png)
+
+第3个位置，如下图，该位置插桩可以看到算法中的运算过程和运算结果，由于截图无法完全展示所有插桩位置，其余插桩点都是在如下图的这样的运算位置，大家自行插上即可
+
+![image-20230901150807569](https://ram-obsidian-1302659657.cos.ap-guangzhou.myqcloud.com/md_image/image-20230901150807569.png)
+
+js文件修改完成之后，使用浏览器自带的本地文件替换（Local Overrides）功能，将对应js替换成修改后的js文件，刷新网页在断点位置开启日志输出，等待代码运行到第二个断点位置，将全部打印日志保存到本地进行分析，输出的日志有点多，保存可能容易卡死，可以多尝试几次
+
+#### 日志分析
+
+从日志可以看到 **token** 参数的值，下面根据日志一步步还原其加密过程，日志大约34万行，秃头警告！
+
+![image-20230901153154407](https://ram-obsidian-1302659657.cos.ap-guangzhou.myqcloud.com/md_image/image-20230901153154407.png)
+
+​	先说一下大概结论：加密参数是通过一个浏览器环境生成的长字符串再经过算法转换为长数组，长数组再经过自写算法生成加密参数，最后与 1001-common-(固定值) 拼接组成最终加密参数，下面依次分析这几部分
+
+![image-20230901162232272](https://ram-obsidian-1302659657.cos.ap-guangzhou.myqcloud.com/md_image/image-20230901162232272.png)
+
+1. 长字符组成分析
+
+   在日志中搜索加密参数的前4个字符 **D36y**，记得开启完全匹配，减少干扰项；跳转到第一次出现 **D36y** 的位置向上查找能看到长字符，大概长这样
+
+```
+"=tM4ce2cfe0dd247ee0e8a862029a085e63VKP#u(`1692194261523^za#*9hj}=#?b1688480919384.3h1hjxKFJ#>?A854f4b71-059c-434c-89bc-5813ce668561%KY#C7?362cb92cBVR#Vsc24~R1#8Win32'oa#zaL-480rH~#jPzzh-CNzq#8S1920x1080K.J#++L1920x1032Ahj"
+```
+
+![](https://ram-obsidian-1302659657.cos.ap-guangzhou.myqcloud.com/md_image/image-20230901162843977.png)
+
+​	长字符由12部分组成, 以井号（#）分割
+
+```
+[
+    "=tM4ce2cfe0dd247ee0e8a862029a085e63VKP",
+    "u(`1692194261523^za",
+    "*9hj}=",
+    "?b�1688480919384.3h1hjxKFJ",
+    ">?A854f4b71-059c-434c-89bc-5813ce668561%KY",
+    "C7?362cb92cBVR",
+    "Vsc24~R1",
+    "��8Win32'oa",
+    "zaL-480rH~",
+    "jPzzh-CN�zq",
+    "8�S1920x1080K.J",
+    "++L1920x1032Ahj"
+]
+```
+
+重点说下第1部分，这部分由：时间戳 + userAgent + cookie的UBT_VID值 + 随机uuid(window.crypto.randomUUID())经过魔改MD5算法生成32位字符，再拼接两组随机3位字符组成；这部分比较麻烦的地方就是找MD5魔改算法中4位常量数组中的3位常量，这里给个提示：在日志中搜索 271733878，魔改的3个常量就在附近
+
+```
+// 第1部分
+"=tM4ce2cfe0dd247ee0e8a862029a085e63VKP"
+组成部分 =====> =tM + 4ce2cfe0dd247ee0e8a862029a085e63 + VKP
+// uastr的组成 ==> 时间戳 + userAgent + cookie的UBT_VID值 + 随机uuid(window.crypto.randomUUID())
+uastr = 1692194261523Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115.0.0.0 Safari/537.361688480919384.3h1hjx854f4b71-059c-434c-89bc-5813ce668561
+
+// 上面的uastr字符经过魔改MD5算法生成
+4ce2cfe0dd247ee0e8a862029a085e63
+=tM --> 随机三位字符 randomStr(3)
+VKP --> 随机三位字符 randomStr(3)
+```
+
+剩下的11个部分，直接看分析笔记吧，就不逐一分析了
+
+```
+// 第2部分
+"u(`1692194261523^za"
+组成部分 =====> "u(` + 1692194261523 + ^za"
+1692194261523 时间戳, 要和uastr的时间戳保持一样
+"u(`" 和 "^za" --> 随机三位字符 randomStr(3)
+-----------------------------------------
+// 第3部分
+"*9hj}=" ==> 2组 随机三位字符 randomStr(3)
+-----------------------------------------
+// 第4部分
+"?b�1688480919384.3h1hjxKFJ"
+组成部分 =====> "?b� + 1688480919384.3h1hjx + KFJ"
+1688480919384.3h1hjx ==> cookie的UBT_VID值
+?b� 和 KFJ ==> 随机三位字符 randomStr(3)
+-----------------------------------------
+// 第5部分
+">?A854f4b71-059c-434c-89bc-5813ce668561%KY"
+组成部分 =====> ">?A + 854f4b71-059c-434c-89bc-5813ce668561 + %KY"
+854f4b71-059c-434c-89bc-5813ce668561 ==> 随机uuid(window.crypto.randomUUID()), 与uastr中的uuid保持一致
+>?A 和 %KY ==> 随机三位字符 randomStr(3)
+-----------------------------------------
+// 第6部分
+"C7?362cb92cBVR"
+组成部分 =====> "C7? + 362cb92c + BVR"
+362cb92c ==> canvas指纹计算得出
+C7? 和 BVR 随机三位字符 randomStr(3)
+-----------------------------------------
+// 第7部分
+"Vsc24~R1"
+组成部分 =====> "Vsc + 24 + ~R1"
+24 ==> screen.colorDepth
+Vsc 和 ~R1 随机三位字符 randomStr(3)
+-----------------------------------------
+// 第8部分
+"��8Win32'oa"
+组成部分 =====> "��8 + Win32 + 'oa"
+Win32 ==> navigator.platform
+��8 和 'oa 随机三位字符 randomStr(3)
+-----------------------------------------
+// 第9部分
+"zaL-480rH~"
+组成部分 =====> "zaL + -480 + rH~"
+-480 ==> (new Date).getTimezoneOffset()
+zaL 和 rH~ 随机三位字符 randomStr(3)
+-----------------------------------------
+// 第10部分
+"jPzzh-CN�zq"
+组成部分 =====> "jPz + zh-CN + �zq"
+zh-CN ==> navigator.language
+jPz 和 �zq 随机三位字符 randomStr(3)
+-----------------------------------------
+// 第11部分
+"8�S1920x1080K.J"
+组成部分 =====> "8�S + 1920x1080 + K.J"
+1920x1080 ==> 屏幕分辨率
+-----------------------------------------
+// 第12部分
+"++L1920x1032Ahj"
+组成部分 =====> "++L + 1920x1032 + Ahj"
+1920x1032 ==> availWidth + availHeight
+++L 和 Ahj 随机三位字符 randomStr(3)
+```
+
+2. 长字符转换为长数组
+
+   上面12个环境字符以井号（#）拼接组成长字符串, 经过算法生成长数组，这部分比较简单
+
+```js
+function str_to_array(long_str) {
+    let new_arr = [];
+    for (let index = 0; index < long_str.length; index++) {
+        new_arr.push(long_str.charCodeAt(index));
+    }
+    return new_arr
+}
+```
+
+3. 长数组生成加密参数
+
+   最后是长数组经过自写算法生成加密参数 **token**，这部分用截图无法展示其计算过程，所有直接给出分析笔记供大家参考，可以结合日志和分析笔记还原出算法
+
+```
+// 长数组
+arr_226 = [61,116,77,52,99,101,50,99,102,101,48,100,100,50,52,55,101,101,48,101,56,97,56,54,50,48,50,57,97,48,56,53,101,54,51,86,75,80,35,117,40,96,49,54,57,50,49,57,52,50,54,49,53,50,51,94,122,97,35,42,57,104,106,125,61,35,63,98,128,49,54,56,56,52,56,48,57,49,57,51,56,52,46,51,104,49,104,106,120,75,70,74,35,62,63,65,56,53,52,102,52,98,55,49,45,48,53,57,99,45,52,51,52,99,45,56,57,98,99,45,53,56,49,51,99,101,54,54,56,53,54,49,37,75,89,35,67,55,63,51,54,50,99,98,57,50,99,66,86,82,35,86,115,99,50,52,126,82,49,35,128,129,56,87,105,110,51,50,39,111,97,35,122,97,76,45,52,56,48,114,72,126,35,106,80,122,122,104,45,67,78,129,122,113,35,56,129,83,49,57,50,48,120,49,48,56,48,75,46,74,35,43,43,76,49,57,50,48,120,49,48,51,50,65,104,106]
+
+// arr_226 第1位
+parseInt(61,10) --> 61
+Math.min(0,61) --> 0
+0 + 100 = 100
+61 % 100 = 61
+0 + 61 = 61
+// arr_226 第2位
+parseInt(116,10) --> 116
+Math.min(0,116) --> 0
+1 + 100 = 101
+116 % 101 = 15
+61 + 15 = 76
+// arr_226 第3位
+parseInt(77,10) --> 77
+Math.min(0,77) --> 0
+2 + 100 = 102
+77 % 102 = 77
+76 + 77 = 153
+// arr_226 第4位
+parseInt(52,10) --> 52
+Math.min(0,52) --> 0
+3 + 100 = 103
+52 % 103 = 52
+153 + 52 = 205
+// arr_226 第5位
+parseInt(99,10) --> 99
+Math.min(0,99) --> 0
+4 + 100 = 104
+99 % 104 = 99
+205 + 99 = 304
+
+......
+计算得出 15664
+------------------------------------------
+固定字符
+init_1 = S9mHXtfaMsZ6DNkgTnL5F0dzpb1lPAocQ8BGh47UqO3
+init_2 = eIrWRYiEJwyjvxK
+---------------------计算最终参数---------------------
+计算第一个字符D
+
+15664 % 43 = 12
+init_1.charAt(12) --> D
+D + ctrip.com
+
+Dctrip.com + S9mHXtfaMsZ6DNkgTnL5F0dzpb1lPAocQ8BGh47UqO3 = Dctrip.comS9mHXtfaMsZ6DNkgTnL5F0dzpb1lPAocQ8BGh47UqO3
+// 43是init_1的长度
+args: Dctrip.comS9mHXtfaMsZ6DNkgTnL5F0dzpb1lPAocQ8BGh47UqO3,0,43 ,func: function substr() { [native code] } --> Dctrip.comS9mHXtfaMsZ6DNkgTnL5F0dzpb1lPAocQ
+
+args: S9mHXtfaMsZ6DNkgTnL5F0dzpb1lPAocQ8BGh47UqO3,Dctrip.comS9mHXtfaMsZ6DNkgTnL5F0dzpb1lPAocQ func: key_alphabet --> q3TmpFc5XODS1olLNU6hGkztQn8gfdAsBM7b4PHa90Z
+
+// 61是arr_226数组的第1位
+args: 61,q3TmpFc5XODS1olLNU6hGkztQn8gfdAsBM7b4PHa90Z func: get_alphabet --> 36
+
+// D是上面计算的结果：init_1.charAt(15664 % 43)
+字符串拼接：D + 36 = D36
+
+"36".charCodeAt(0) --> 51
+51 + 0 = 51
+61 % 51 = 10 // 61是arr_226数组的第1位
+10 % 15 = 10 // 15是init_2的长度
+init_2.charAt(10) --> y
+
+字符串拼接：D36 + y = D36y
+-----------------------------------------------------------------
+Dctrip.com + q3TmpFc5XODS1olLNU6hGkztQn8gfdAsBM7b4PHa90Z = Dctrip.comq3TmpFc5XODS1olLNU6hGkztQn8gfdAsBM7b4PHa90Z
+// 43是init_1的长度
+args: Dctrip.comq3TmpFc5XODS1olLNU6hGkztQn8gfdAsBM7b4PHa90Z,0,43 ,func: function substr() { [native code] } --> Dctrip.comq3TmpFc5XODS1olLNU6hGkztQn8gfdAsB
+
+args: q3TmpFc5XODS1olLNU6hGkztQn8gfdAsBM7b4PHa90Z,Dctrip.comq3TmpFc5XODS1olLNU6hGkztQn8gfdAsB func: key_alphabet --> Q4SOGlqt9baBFp06Uh1TdzoA8LNZcM7gsXHnPfm53kD
+
+// 116是arr_226数组的第2位
+args: 116,Q4SOGlqt9baBFp06Uh1TdzoA8LNZcM7gsXHnPfm53kD func: get_alphabet --> S7
+字符串拼接：D36y + S7 = D36yS7
+
+"S7".charCodeAt(0) --> 83
+83 + 1 = 84
+116 % 84 = 32 // 116是arr_226数组的第2位
+32 % 15 = 2 // 15是init_2的长度
+init_2.charAt(2) --> r
+字符串拼接：D36yS7 + r = D36yS7r
+
+...... 多轮计算
+
+最终计算出加密参数
+```
+
+#### 参数验证
+
+![image-20230901170632308](https://ram-obsidian-1302659657.cos.ap-guangzhou.myqcloud.com/md_image/image-20230901170632308.png)

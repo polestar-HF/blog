@@ -1,0 +1,75 @@
+---
+title: 美食优惠平台-webpack实战
+date: '2024-05-04'
+tags: ['js', 'web', 'webpack']
+draft: false
+summary: webpack逆向分析
+---
+
+
+#### 声明
+**本文章中所有内容仅供学习交流使用，不用于其他任何目的，不提供完整代码，抓包内容、敏感网址、数据接口等均已做脱敏处理，严禁用于商业用途和非法用途，否则由此产生的一切后果均与作者无关！**
+
+目标网站：aHR0cHM6Ly9zdGF0aWMud2FpdHdhaXRwYXkuY29tL3dlYi9zZF9zZS9pbmRleC5odG1sIy8=
+
+1. 抓包分析与解密定位
+
+在搜索框输入“粤菜”，点击搜索，通过抓包分析发现nearby开头的这个请求就是搜索请求，请求参数都是常规参数，其中看着像加密参数的request_id，经测试直接写死即可；但是响应数据是被加密了，这是今天的重点，继续分析前端如何解密
+
+![](https://ram-obsidian-1302659657.cos.ap-guangzhou.myqcloud.com/md_image/202212261619065.png)
+![](https://ram-obsidian-1302659657.cos.ap-guangzhou.myqcloud.com/md_image/202212261620632.png)
+
+这里的响应数据没有任何关键字，不太容易通过搜索定位解密位置，难受，于是尝试了各种手段，一小时过去了，终于让我找到解密位置，全局搜索 default.decode，点击进入，打上断点，向下滑动页面，成功断住；通过堆栈分析，该函数就是解密数据的入口，通过将请求返回的加密数据传入该函数，就能解密得到明文数据
+
+![](https://ram-obsidian-1302659657.cos.ap-guangzhou.myqcloud.com/md_image/202212261649908.png)
+
+2. webpack本地改写
+
+什么是webpack？
+https://webpack.docschina.org/concepts/
+
+怎么知道一个网站是不是使用了webpack加密，可以通过全局搜索webpack关键字，如果能搜索到，那就基本可以确认这个网站使用了webpack加密
+
+![](https://ram-obsidian-1302659657.cos.ap-guangzhou.myqcloud.com/md_image/202212261732732.png)
+
+改写webpack，首先需要找到webpack加载器（也有叫导出器），先看解密函数代码，发现解密主要通过两个函数来实现的，a.default.decode与o.default.inflate
+
+![](https://ram-obsidian-1302659657.cos.ap-guangzhou.myqcloud.com/md_image/202212261736864.png)
+
+向上寻找这两个函数最开始被定义的位置，找到o = s(n(423))与a = s(n(432))，这里的 n函数就是我们要找的加载器，423代表数webpack打包后的大数组中的第423位置上的函数
+
+![](https://ram-obsidian-1302659657.cos.ap-guangzhou.myqcloud.com/md_image/202212261740709.png)
+
+在函数定义位置打上断点，刷新网页，在断点位置停下，单步进入n函数，红框圈起来的就是加载器，加载器一般都有exports、.call关键字，也不排除有其他类型的加载器
+
+![](https://ram-obsidian-1302659657.cos.ap-guangzhou.myqcloud.com/md_image/202212261748450.png)
+
+复制到本地编辑器改写，删除无用的代码，定义一个全局变量，把加载器保存到全局作用域方便后续调用，改写后的加载器如下
+
+![](https://ram-obsidian-1302659657.cos.ap-guangzhou.myqcloud.com/md_image/202212261753547.png)
+
+有了加载器之后就可以去找解密函数所需要的模块并复制到本地，webpack有一种通用的办法就把加载器和全部模块复制到本地运行，就不用一个个去扣代码，但是遇到代码多的网站，全部弄下来，本地运行会很卡；所以这里我选择只扣需要的模块代码；
+
+o = s(n(423)) 这个函数需要423号模块；加载器里面的 e 就是模块大数组，通过在控制台输入e\[423]就可以找到423模块函数
+
+![](https://ram-obsidian-1302659657.cos.ap-guangzhou.myqcloud.com/md_image/202212261803761.png)
+点击控制台对应输出位置，进入到函数位置，复制到本地放入加载器，模块号为键，对应函数为值
+
+![](https://ram-obsidian-1302659657.cos.ap-guangzhou.myqcloud.com/md_image/202212262115072.png)
+
+运行一下，发现报如下错误，这个错误一般都是还缺其他模块，具体缺的模块，要结合代码去看
+
+![](https://ram-obsidian-1302659657.cos.ap-guangzhou.myqcloud.com/md_image/202212262211795.png)
+
+我们从上面报错发现423模块函数中还加载了其他模块函数，例如加载了424、427的模块函数，这些模块中还有可能也加载了其他模块，一个个去看比较麻烦，有个小技巧：可以在加载器里添加一个日志断点，打印加载的模块，扣代码就会方便些
+
+![](https://ram-obsidian-1302659657.cos.ap-guangzhou.myqcloud.com/md_image/202212262159227.png)
+
+![](https://ram-obsidian-1302659657.cos.ap-guangzhou.myqcloud.com/md_image/202212262200670.png)
+
+这样是不是方便多了，直接挨个去大数组把模块复制下来即可，不用在去看每个函数里面加载了那些模块代码
+
+3. 解密测试
+全部模块都拿到本地之后，经过测试可以正常解密
+
+![](https://ram-obsidian-1302659657.cos.ap-guangzhou.myqcloud.com/md_image/202212262219362.png)

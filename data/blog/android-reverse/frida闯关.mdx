@@ -1,0 +1,275 @@
+---
+title: Frida闯关练习
+date: '2024-05-04'
+tags: ['android', 'app']
+draft: false
+summary: frida基础练习
+---
+
+#### 声明
+
+**本文章中所有内容仅供学习交流使用，严禁用于商业用途和非法用途，否则由此产生的一切后果均与作者无关，若有侵权，请联系作者立即删除！**
+
+最近网上冲浪时发现一个frida闯关app，玩法就是用frida过掉关卡，刚好最近也在学习frida，所以就下载来玩玩，比较有意思，可以试试
+
+#### 登录校验
+
+打开 **app**，发现需要账号密码才能登录，但是目前不知道账号密码，先随便输入一个账号密码，点击登录，弹出提示语 **Login failed.** 
+
+![image-20230916132143046](https://ram-obsidian-1302659657.cos.ap-guangzhou.myqcloud.com/md_image/image-20230916132143046.png)
+
+根据提示语在 **jadx** 中进行搜索，搜到一个结果点击进到代码里，发现 **onCreate** 方法对输入的账密进行校验，校验不通过则弹出提示语
+
+![image-20230916132454967](https://ram-obsidian-1302659657.cos.ap-guangzhou.myqcloud.com/md_image/image-20230916132454967.png)
+
+![image-20230916174714245](https://ram-obsidian-1302659657.cos.ap-guangzhou.myqcloud.com/md_image/image-20230916174714245.png)
+
+从代码中看出 **!LoginActivity.a(obj, obj).equals(obj2)** 对账密进行校验，首先进到 **LoginActivity.a** 方法，该方法是对账号进行 **HmacSHA256** 加密，将加密结果返回再与输入的密码比较是否相等，相等则登录成功
+
+![image-20230916175114221](https://ram-obsidian-1302659657.cos.ap-guangzhou.myqcloud.com/md_image/image-20230916175114221.png)
+
+有两种思路过掉这题，第一种思路：**hook LoginActivity.a** 方法，将其结果打印出来，再次登录时将其作为密码即可；第二种思路：**hook  java.lang.String** 类中 **equals** 方法，判断在对账密校验时返回 **true** 即可
+
+```js
+Java.perform(function(){
+    console.log("START HOOK...");
+    // 第一种思路
+    var LoginActivity = Java.use("com.example.androiddemo.Activity.LoginActivity")
+    LoginActivity.a.overload("java.lang.String", "java.lang.String").implementation = function (p1, p2) {
+        console.log("p1: " + p1);
+        console.log("p2: " + p2);
+        var res = this.a.apply(this, arguments)
+        console.log("res: " + res);
+        return res
+    }
+    // 第二种思路
+    var StringClass = Java.use("java.lang.String")
+    StringClass.equals.implementation = function (obj) {
+        if (obj == "admin"){
+            console.log("apply equals");
+            console.log("obj: " + obj);
+            // 修改返回值, 过掉检测
+            return true
+        }else{
+            return this.equals(obj)
+        }
+    }
+})
+```
+
+#### 第1题
+
+在第1题页面，点击按钮，弹出提示语 **Check Failed!**
+
+![image-20230916180102539](https://ram-obsidian-1302659657.cos.ap-guangzhou.myqcloud.com/md_image/image-20230916180102539.png)
+
+根据提示语在 **jadx** 中进行搜索，搜到一个候选结果，点击进入代码
+
+![image-20230916180256296](https://ram-obsidian-1302659657.cos.ap-guangzhou.myqcloud.com/md_image/image-20230916180256296.png)
+
+![image-20230916180403497](https://ram-obsidian-1302659657.cos.ap-guangzhou.myqcloud.com/md_image/image-20230916180403497.png)
+
+首先对 **CheckFailed** 方法进行 **hook**，打印其调用堆栈，根据堆栈进行进一步分析
+
+![image-20230916181106027](https://ram-obsidian-1302659657.cos.ap-guangzhou.myqcloud.com/md_image/image-20230916181106027.png)
+
+```js
+function showStack() {
+    Java.perform(function () {
+      console.log(Java.use('android.util.Log').getStackTraceString(Java.use('java.lang.Throwable').$new()))
+    })
+  }
+Java.perform(function () {
+    console.log("START HOOK...");
+    var BaseFridaActivity = Java.use("com.example.androiddemo.Activity.BaseFridaActivity")
+    BaseFridaActivity.CheckFailed.implementation = function(){
+        // 堆栈打印
+        showStack()
+        this.CheckFailed()
+    }
+})
+```
+
+在 **jadx** 中搜索 **com.example.androiddemo.Activity.FridaActivity1**，记得勾上类名选项，点击进入类中，找到 **onCheck** 方法
+
+![image-20230916181552723](https://ram-obsidian-1302659657.cos.ap-guangzhou.myqcloud.com/md_image/image-20230916181552723.png)
+
+![image-20230916181728518](https://ram-obsidian-1302659657.cos.ap-guangzhou.myqcloud.com/md_image/image-20230916181728518.png)
+
+从代码中看出 **b** 方法对字符 **"请输入密码:"** 进行**GZIP**压缩，再将其结果传递 **a** 方法进行计算，最后将结果与 **R4jSLLLLLLLLLLOr.......** 字符串进行比较是否相等
+
+两种思路过掉这题，第一种思路：**hook a** 方法将其返回值修改为 **R4jSLLLLLLLLLLOr.......**，第二种思路：**hook  java.lang.String** 类中 **equals **方法，判断在对**R4jSLLLLLLLLLLOr.......** 字符做检测时返回 **true**
+
+```js
+// 第一种思路
+Java.perform(function () {
+    console.log("START HOOK...");
+    var FridaActivity1 = Java.use("com.example.androiddemo.Activity.FridaActivity1")
+    FridaActivity1.a.overload("[B").implementation = function name(bArr) {
+        console.log("bArr: " + JSON.stringify(bArr));
+        var res = this.a(bArr)
+        console.log("a -> res: " + JSON.stringify(res));
+        // 更改返回值过掉检测
+        return "R4jSLLLLLLLLLLOrLE7/5B+Z6fsl65yj6BgC6YWz66gO6g2t65Pk6a+P65NK44NNROl0wNOLLLL="
+    }
+})
+// 第二种思路同上面一样, 改一下判断条件即可
+```
+
+#### 第2题
+
+第2题页面，点击按钮，弹出提示语 **Check Failed!**
+
+![image-20230916213344165](https://ram-obsidian-1302659657.cos.ap-guangzhou.myqcloud.com/md_image/image-20230916213344165.png)
+
+从截图中可以看到和第1题提示语一样，所以可以使用第1题的方式找到检测点，这里就不详细说了，根据**jadx**搜索的结果跳到代码位置
+
+![image-20230916225634701](https://ram-obsidian-1302659657.cos.ap-guangzhou.myqcloud.com/md_image/image-20230916225634701.png)
+
+这题检测了**static_bool_var** 和 **bool_var** 是否都为 **true**，都为 **true** 才能通过校验，这两个变量默认为 **false**，所以只需要 **hook** 这个 **onCheck** 方法，在调用之前将两个变量值修改为 **true** 即可
+
+```js
+Java.perform(function(){
+    var FridaActivity2 = Java.use("com.example.androiddemo.Activity.FridaActivity2")
+    // 检测 static_bool_var && this.bool_var
+    FridaActivity2.onCheck.implementation = function(){
+        // 设置私有变量bool_var为true
+        this.static_bool_var.value = true
+        this.bool_var.value = true
+        this.onCheck()
+    }
+})
+```
+
+#### 第3题
+
+第3题页面，点击按钮，弹出提示语 **Check Failed!**
+
+![image-20230916230832959](https://ram-obsidian-1302659657.cos.ap-guangzhou.myqcloud.com/md_image/image-20230916230832959.png)
+
+使用第1题的方式查找检测点，根据**jadx**搜索的结果跳到代码位置
+
+![image-20230916231059757](https://ram-obsidian-1302659657.cos.ap-guangzhou.myqcloud.com/md_image/image-20230916231059757.png)
+
+从代码中可以看到和第2题差不多一样，可以使用同样方式将其过掉，需要注意一个地方是，类里面有一个方法和变量是同名的 **same_name_bool_var**，在 **hook** 修改变量时需要在变量前面加个下划线去查找
+
+```js
+Java.perform(function(){
+    console.log("START HOOK...");
+    var FridaActivity3 = Java.use("com.example.androiddemo.Activity.FridaActivity3")
+    // 调用静态方法设置私有静态变量static_bool_var为true
+    FridaActivity3.onCheck.implementation = function () {
+        this.static_bool_var.value = true
+        this.bool_var.value = true
+        // 类下面有一个同名的方法same_name_bool_var, 所以hook时需要在变量名前加下划线 _same_name_bool_var.value, 表示查找字段而不是方法
+        this._same_name_bool_var.value = true
+        console.log(this.bool_var.value);
+        console.log(this.same_name_bool_var.value);
+        this.onCheck()
+    }
+})
+```
+
+#### 第4题
+
+后面几题的提示语和前面几题一样，可以使用同一种方式找到检测点，这里就不逐一截图了
+
+![image-20230916232042604](https://ram-obsidian-1302659657.cos.ap-guangzhou.myqcloud.com/md_image/image-20230916232042604.png)
+
+从代码中可以看到 **onCheck** 方法检测了内部类的6个方法的返回值，都为 **true** 则通过校验，但是这6个方法的默认返回值都是 **fasle**，所以需要批量**hook**内部类中的6个方法修改其返回值
+
+```js
+Java.perform(function(){
+    console.log("START HOOK...");
+    // 加载内部类, 注意要加$查找
+    var InnerClasses = Java.use("com.example.androiddemo.Activity.FridaActivity4$InnerClasses");
+    // 利用反射获取类下面的所有方法，但不包括继承的方法
+    var Methods = InnerClasses.class.getDeclaredMethods()
+    // 批量hook
+    Methods.forEach(method => {
+        // hook check 方法，将其返回值改为true
+        InnerClasses[method.getName()].implementation = function () {
+            console.log("hook " + method.getName() + " return true");
+            return true
+        }
+    });
+})
+```
+
+#### 第5题
+
+使用上面的方式找到检测点
+
+![image-20230916233821428](https://ram-obsidian-1302659657.cos.ap-guangzhou.myqcloud.com/md_image/image-20230916233821428.png)
+
+从代码中看出对 **getDynamicDexCheck().check()** 方法的返回进行检测了，**getDynamicDexCheck** 方法返回 **this.DynamicDexCheck**，**this.DynamicDexCheck** 在 **loaddex** 方法中被赋值为 **DynamicCheck** 类的实例对象，**DynamicCheck** 类里面的 **check** 方法默认返回 **false**，所以需要**hook** 该方法将其返回值修改为**true**来通过校验；由于 **DynamicCheck** 类是动态加载的，所以不能使用常规方式**hook**
+
+```js
+Java.perform(function(){
+    console.log("START HOOK...");
+    // hook 动态加载dex
+    Java.enumerateClassLoaders({
+        onMatch:function (loader) {
+            // 切换类加载器
+            Java.classFactory.loader = loader
+            try {
+                // 查找类
+                var DynamicCheck = Java.use("com.example.androiddemo.Dynamic.DynamicCheck")
+                console.log(loader.$className + " -> hook successes");
+                // hook check方法
+                DynamicCheck.check.implementation = function(){
+                    console.log("apply check");
+                    var res = this.check()
+                    console.log("res: " + res);
+                    // 默认返回值false, 修改返回值为true, 来过掉检测
+                    return true
+                }
+            } catch (error) {
+                if (error.message.includes("ClassNotFoundException")) {
+                    console.log(loader.$className + " -> Didn't find class");
+                }
+            }
+        },
+        onComplete:function () {
+        }
+    })
+    // 常规hook
+    // var DynamicCheck = Java.use("com.example.androiddemo.Dynamic.DynamicCheck")
+    // console.log(loader.$className + " -> hook successes");
+    // // hook check方法
+    // DynamicCheck.check.implementation = function(){
+    //     console.log("apply check");
+    //     var res = this.check()
+    //     console.log("res: " + res);
+    //     // 默认返回值false, 修改返回值为true, 来过掉检测
+    //     return true
+    // }
+})
+
+```
+
+#### 第6题
+
+![image-20230916235503302](https://ram-obsidian-1302659657.cos.ap-guangzhou.myqcloud.com/md_image/image-20230916235503302.png)
+
+使用上面的方式找到检测点，从代码中看出检测了3个类中的 **check** 方法的返回值，都为 **true** 则通过校验，从截图中可以看出3个类的 **check** 方法的返回值都为 **false**，所以需要批量 **hook** 3个类中的 **check** 方法，修改其返回值为 **true** 即可
+
+```js
+Java.perform(function(){
+    console.log("START HOOK...");
+    // 批量hook类中的方法
+    for (let num = 0; num < 3; num++) {
+        var className = "com.example.androiddemo.Activity.Frida6.Frida6Class" + num
+        var Frida6Class = Java.use(className)
+        Frida6Class.check.implementation = function(){
+            console.log("hook class: " + className);
+            console.log("apply check");
+            var res = this.check()
+            console.log("res: "+res);
+            return true
+        }
+    }
+})
+```
+
+以上就是frida闯关app所有关卡的解法，分析的过程还是比较有意思，可以去尝试玩一玩，如果需要这个闯关app，可以在后台回复 "frida闯关" 即可下载

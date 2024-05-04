@@ -1,0 +1,81 @@
+---
+title: 极简壁纸逆向
+date: '2024-05-04'
+tags: ['js', 'web']
+draft: false
+summary: 滑块逆向分析
+---
+
+#### 声明
+**本文章中所有内容仅供学习交流使用，不用于其他任何目的，不提供完整代码，抓包内容、敏感网址、数据接口等均已做脱敏处理，严禁用于商业用途和非法用途，否则由此产生的一切后果均与作者无关！**
+
+目标网站：aHR0cHM6Ly9iei56enptaC5jbi9zZWFyY2g=
+
+前言
+>该壁纸网站主要有三个反爬点：无限dubugger、响应加密，验证码；下文将逐一解答
+
+1. 抓包分析
+	打开浏览器工具，准备抓包分析，发现有无限dubugger，常规解决办法：右键 Never pause here，永远不在此处断下即可，但是会发现网页很卡，无法调试，应该是定时器在作怪，在命令行输入一些代码即可解决
+
+```
+for (let i = 1; i < 99999; i++) window.clearInterval(i);
+```
+![](https://ram-obsidian-1302659657.cos.ap-guangzhou.myqcloud.com/md_image/202212251640717.png)
+
+现在就可以继续抓包分析了，经过分析searchData接口下的数据就是我们搜索的结果，请求参数没有加密，都是一些常规的参数；但是响应数据是被加密了，继续分析浏览器是怎么解密的
+![](https://ram-obsidian-1302659657.cos.ap-guangzhou.myqcloud.com/md_image/202212251644475.png)
+![](https://ram-obsidian-1302659657.cos.ap-guangzhou.myqcloud.com/md_image/202212251645868.png)
+
+2. 响应解密
+祭出搜索大法，咔咔一顿搜，搜到的结果太多了，不想去每个打上断点；所以换一种方式，找堆栈，果然找到了
+![](https://ram-obsidian-1302659657.cos.ap-guangzhou.myqcloud.com/md_image/202212251657072.png)
+
+点击进入堆栈，发现代码经过了ob混淆，可以使用AST反混淆，让代码逻辑更清晰，这里我就直接硬钢了，在744行打上断点，重新发包，成功断住，这里就是响应数据解密的位置
+![](https://ram-obsidian-1302659657.cos.ap-guangzhou.myqcloud.com/md_image/202212251706214.png)
+
+单步跟进解密函数，响应结果先经过base64解密，然后创建了一个与解密后的字符串同等长度的 **Int8Array** 类型数组，遍历解密字符串，每个字符串经过 **charCodeAt** 方法转换成整数存入Int8Array数组，并返回
+![](https://ram-obsidian-1302659657.cos.ap-guangzhou.myqcloud.com/md_image/202212251815417.png)
+
+然后刚才返回的数组又经过移位和异或操作生成一个新数组并返回
+![](https://ram-obsidian-1302659657.cos.ap-guangzhou.myqcloud.com/md_image/202212251824040.png)
+
+最后数组经过一系列操作，解密成字符串；扣代码也没什么坑，直接缺啥补啥就行了
+![](https://ram-obsidian-1302659657.cos.ap-guangzhou.myqcloud.com/md_image/202212251913771.png)
+
+3. 寻找auth_key
+通过抓包发现请求壁纸图片时有一个参数auth_key是加密的，找一下它加密的位置
+![](https://ram-obsidian-1302659657.cos.ap-guangzhou.myqcloud.com/md_image/202212251923642.png)
+
+全局搜索关键字auth_key，匹配结果只有两个，点击第一个匹配项，就是加密位置
+![](https://ram-obsidian-1302659657.cos.ap-guangzhou.myqcloud.com/md_image/202212251927873.png)
+
+图片链接传入该加密函数会生成auth_key参数，拼接到图片链接并返回，直接扣代码即可
+![](https://ram-obsidian-1302659657.cos.ap-guangzhou.myqcloud.com/md_image/202212251935865.png)
+
+图片链接中的（"https://cdn2.zzzmh.cn/wallpaper/origin/10692874f4c64ba4b853579ff4136f9a.jpg/thumbs"\) 10692874f4c64ba4b853579ff4136f9a 是前面响应数据的 i 值
+
+4. 验证码
+在翻页时就会出现滑动验证码，这里的验证码比较简单，容易处理
+![](https://ram-obsidian-1302659657.cos.ap-guangzhou.myqcloud.com/md_image/202212252009526.png)
+
+get api是请求与验证码相关数据的请求，其中返回值：jigsawImageBase64是滑块图片，originalImageBase64是滑块背景图片，secretKey会在加密的时候用到，token会在加密和后续验证时用的
+![](https://ram-obsidian-1302659657.cos.ap-guangzhou.myqcloud.com/md_image/202212252017708.png)
+
+check api 是验证验证码是否通过的请求，请求参数：captchaType是定值，pointJson是加密参数，token是上面返回的
+![](https://ram-obsidian-1302659657.cos.ap-guangzhou.myqcloud.com/md_image/202212252023749.png)
+
+全局搜索pointJson，很好，又被我搜到了，点击第一个匹配选项，打上断点重新滑动验证码就可以断下
+![](https://ram-obsidian-1302659657.cos.ap-guangzhou.myqcloud.com/md_image/202212252036101.png)
+
+单步跟进函数，发现是AES加密，密钥是请求验证码图片返回的secretKey，传入的参数 '\{"x":171.23809523809524,"y":5\}' ，其中 x 是滑动距离，y 是定值5，自己在传入参数是要注意key:value之间没有空格，有空格生成的结果是验证不过的；AES加密直接导库就可以，验证码滑动距离识别用ddddocr就可以，准确率挺不错
+![](https://ram-obsidian-1302659657.cos.ap-guangzhou.myqcloud.com/md_image/202212252041449.png)
+
+通过验证码的第一次搜索请求，headers里面会多一个参数captcha，这个值也是通过AES加密生成的，只是传入的参数有点区别，加了与验证码图片一起返回的token
+![](https://ram-obsidian-1302659657.cos.ap-guangzhou.myqcloud.com/md_image/202212252051556.png)
+![](https://ram-obsidian-1302659657.cos.ap-guangzhou.myqcloud.com/md_image/202212252049344.png)
+
+第一次搜索请求响应结果也会多一个数据chuck，后续的请求在headers里面带上即可
+![](https://ram-obsidian-1302659657.cos.ap-guangzhou.myqcloud.com/md_image/202212252055050.png)
+
+5. 代码测试
+![](https://ram-obsidian-1302659657.cos.ap-guangzhou.myqcloud.com/md_image/202212252101881.png)
